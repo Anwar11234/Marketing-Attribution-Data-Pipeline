@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: marketing_attribution_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: marketing_attribution
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./raw_data/postgres/conversions.sql:/docker-entrypoint-initdb.d/01_conversions.sql
+
+volumes:
+  postgres_data:
