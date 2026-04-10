@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: marketing_raw          
+    database: marketing_data    
+    schema: raw                 
+
+    tables:
+      - name: google_ads
+      - name: app_conversions
+      - name: segment_tracks

@@ -1,3 +1,4 @@
 *.duckdb
 *.wal
 raw_data
+.env
