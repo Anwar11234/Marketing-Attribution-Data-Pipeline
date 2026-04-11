@@ -14,27 +14,31 @@ Intentional messiness included (matching Tim's articles):
   - Postgres:   snake_case naming from backend, integer IDs, UTC offset
                 timezone strings instead of proper timestamps
 
+Incremental behaviour:
+  - First run      → generates a full year of historical data
+  - Subsequent runs → detects the last generated date per source
+                      and appends only the new days up to today
+  - Safe to run daily via cron / Task Scheduler
+
 Usage:
   python generate_data.py
 
-Re-run anytime to regenerate data up to today's date.
 Output lands in ./raw_data/
 """
 
 import csv
 import json
-import os
 import random
 import hashlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-# ── Seed & date range ────────────────────────────────────────────────────────
+# ── Seed & dates ─────────────────────────────────────────────────────────────
 
-random.seed(42)  # reproducible randomness; change to reseed differently
+random.seed(42)
 
-END_DATE   = date.today()
-START_DATE = END_DATE - timedelta(days=365)
+TODAY      = date.today()
+FIRST_DATE = TODAY - timedelta(days=365)   # used only on a fresh run
 
 # ── Output dirs ──────────────────────────────────────────────────────────────
 
@@ -50,69 +54,150 @@ for d in [GOOGLE_DIR, SEGMENT_DIR, POSTGRES_DIR]:
 
 CAMPAIGNS = [
     # (id, name, platform, channel, budget_usd/day)
-    (1,  "Brand Awareness Q1",          "google",   "search",   450),
-    (2,  "Summer Sale - Retargeting",   "google",   "display",  320),
-    (3,  "Product Launch - Video",      "google",   "video",    600),
-    (4,  "Holiday Promo",               "google",   "shopping", 800),
-    (5,  "New User Acquisition",        "google",   "search",   550),
-    (6,  "Brand Awareness Q1",          "meta",     "search",   400),   # same name, different platform
-    (7,  "Summer Sale Carousel",        "meta",     "display",  290),
-    (8,  "Retargeting - Cart Abandon",  "meta",     "display",  180),
-    (9,  "Holiday Promo",               "meta",     "shopping", 750),
-    (10, "Lookalike Expansion",         "meta",     "search",   420),
-    (11, "Brand Awareness Q1",          "linkedin", "search",   300),
-    (12, "B2B Lead Gen",                "linkedin", "display",  500),
-    (13, "Thought Leadership",          "linkedin", "video",    380),
-    (14, "Event Promotion",             "linkedin", "display",  260),
-    (15, "Product Demo Offer",          "linkedin", "search",   340),
-    (16, "Competitor Conquest",         "google",   "search",   210),
-    (17, "App Install Campaign",        "google",   "display",  490),
-    (18, "Podcast Sponsorship",         "meta",     "video",    650),
-    (19, "Influencer Amplification",    "meta",     "video",    420),
-    (20, "Career Page Visitors",        "linkedin", "display",  190),
-    (21, "Dynamic Search Ads",          "google",   "search",   370),
-    (22, "YouTube Bumpers",             "google",   "video",    280),
-    (23, "Spring Collection",           "meta",     "shopping", 620),
-    (24, "Back to School",              "google",   "shopping", 710),
-    (25, "Flash Sale - Email Lookalike","meta",     "search",   330),
+    (1,  "Brand Awareness Q1",           "google",   "search",   450),
+    (2,  "Summer Sale - Retargeting",    "google",   "display",  320),
+    (3,  "Product Launch - Video",       "google",   "video",    600),
+    (4,  "Holiday Promo",                "google",   "shopping", 800),
+    (5,  "New User Acquisition",         "google",   "search",   550),
+    (6,  "Brand Awareness Q1",           "meta",     "search",   400),
+    (7,  "Summer Sale Carousel",         "meta",     "display",  290),
+    (8,  "Retargeting - Cart Abandon",   "meta",     "display",  180),
+    (9,  "Holiday Promo",                "meta",     "shopping", 750),
+    (10, "Lookalike Expansion",          "meta",     "search",   420),
+    (11, "Brand Awareness Q1",           "linkedin", "search",   300),
+    (12, "B2B Lead Gen",                 "linkedin", "display",  500),
+    (13, "Thought Leadership",           "linkedin", "video",    380),
+    (14, "Event Promotion",              "linkedin", "display",  260),
+    (15, "Product Demo Offer",           "linkedin", "search",   340),
+    (16, "Competitor Conquest",          "google",   "search",   210),
+    (17, "App Install Campaign",         "google",   "display",  490),
+    (18, "Podcast Sponsorship",          "meta",     "video",    650),
+    (19, "Influencer Amplification",     "meta",     "video",    420),
+    (20, "Career Page Visitors",         "linkedin", "display",  190),
+    (21, "Dynamic Search Ads",           "google",   "search",   370),
+    (22, "YouTube Bumpers",              "google",   "video",    280),
+    (23, "Spring Collection",            "meta",     "shopping", 620),
+    (24, "Back to School",               "google",   "shopping", 710),
+    (25, "Flash Sale - Email Lookalike", "meta",     "search",   330),
 ]
 
-# Campaign active windows (some campaigns only run part of the year)
-CAMPAIGN_WINDOWS = {
-    1:  (START_DATE,               START_DATE + timedelta(days=90)),
-    2:  (START_DATE + timedelta(days=60),  START_DATE + timedelta(days=210)),
-    3:  (START_DATE + timedelta(days=30),  START_DATE + timedelta(days=120)),
-    4:  (END_DATE   - timedelta(days=60),  END_DATE),
-    5:  (START_DATE,               END_DATE),
-    6:  (START_DATE,               START_DATE + timedelta(days=90)),
-    7:  (START_DATE + timedelta(days=60),  START_DATE + timedelta(days=210)),
-    8:  (START_DATE,               END_DATE),
-    9:  (END_DATE   - timedelta(days=60),  END_DATE),
-    10: (START_DATE + timedelta(days=180), END_DATE),
-    11: (START_DATE,               START_DATE + timedelta(days=90)),
-    12: (START_DATE,               END_DATE),
-    13: (START_DATE + timedelta(days=90),  END_DATE),
-    14: (START_DATE + timedelta(days=150), START_DATE + timedelta(days=270)),
-    15: (START_DATE,               END_DATE),
-    16: (START_DATE + timedelta(days=30),  END_DATE),
-    17: (START_DATE + timedelta(days=45),  START_DATE + timedelta(days=300)),
-    18: (START_DATE + timedelta(days=120), END_DATE),
-    19: (START_DATE + timedelta(days=180), END_DATE),
-    20: (START_DATE,               END_DATE),
-    21: (START_DATE,               END_DATE),
-    22: (START_DATE + timedelta(days=30),  START_DATE + timedelta(days=250)),
-    23: (START_DATE + timedelta(days=60),  START_DATE + timedelta(days=180)),
-    24: (START_DATE + timedelta(days=150), START_DATE + timedelta(days=240)),
-    25: (START_DATE + timedelta(days=200), END_DATE),
-}
+# Campaign windows are anchored to first_date so they stay consistent
+# across incremental runs regardless of when you first ran the script.
+def build_campaign_windows(first: date, last: date) -> dict:
+    return {
+        1:  (first,                       first + timedelta(days=90)),
+        2:  (first + timedelta(days=60),  first + timedelta(days=210)),
+        3:  (first + timedelta(days=30),  first + timedelta(days=120)),
+        4:  (last  - timedelta(days=60),  last),
+        5:  (first,                       last),
+        6:  (first,                       first + timedelta(days=90)),
+        7:  (first + timedelta(days=60),  first + timedelta(days=210)),
+        8:  (first,                       last),
+        9:  (last  - timedelta(days=60),  last),
+        10: (first + timedelta(days=180), last),
+        11: (first,                       first + timedelta(days=90)),
+        12: (first,                       last),
+        13: (first + timedelta(days=90),  last),
+        14: (first + timedelta(days=150), first + timedelta(days=270)),
+        15: (first,                       last),
+        16: (first + timedelta(days=30),  last),
+        17: (first + timedelta(days=45),  first + timedelta(days=300)),
+        18: (first + timedelta(days=120), last),
+        19: (first + timedelta(days=180), last),
+        20: (first,                       last),
+        21: (first,                       last),
+        22: (first + timedelta(days=30),  first + timedelta(days=250)),
+        23: (first + timedelta(days=60),  first + timedelta(days=180)),
+        24: (first + timedelta(days=150), first + timedelta(days=240)),
+        25: (first + timedelta(days=200), last),
+    }
 
-USER_IDS = [f"u_{i:05d}" for i in range(1, 5001)]  # 5000 fake users
+# 5000 users shared across both Segment and Postgres.
+# Segment stores them as prefixed strings: "u_00001" ... "u_05000"
+# Postgres stores them as plain integers:   1 ... 5000
+# Bridge: strip "u_" prefix to join — "u_01027" <-> usr_id 1027
+USER_IDS     = [f"u_{i:05d}" for i in range(1, 5001)]
+USER_ID_INTS = list(range(1, 5001))
 
 EVENT_TYPES = ["page_view", "add_to_cart", "checkout_start", "search", "product_view"]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Incremental state detection ───────────────────────────────────────────────
+
+def google_last_date() -> date | None:
+    """Return the latest date already generated for Google Ads, or None."""
+    files = sorted(GOOGLE_DIR.glob("google_ads_*.csv"))
+    if not files:
+        return None
+    stem = files[-1].stem.replace("google_ads_", "")   # "20250324"
+    return date(int(stem[:4]), int(stem[4:6]), int(stem[6:8]))
+
+
+def segment_last_date() -> date | None:
+    """Return the date of the last event in the JSONL file, or None."""
+    seg_file = SEGMENT_DIR / "segment_tracks.jsonl"
+    if not seg_file.exists():
+        return None
+    # Efficiently read the last non-empty line without loading the whole file
+    with open(seg_file, "rb") as f:
+        f.seek(0, 2)
+        pos   = f.tell()
+        lines = []
+        while pos > 0 and len(lines) < 2:
+            pos = max(0, pos - 4096)
+            f.seek(pos)
+            lines = f.read().splitlines()
+        last_line = lines[-1].decode("utf-8") if lines else ""
+    if not last_line.strip():
+        return None
+    ts = json.loads(last_line).get("timestamp", "")
+    return date.fromisoformat(ts[:10])
+
+
+def postgres_last_date() -> date | None:
+    """Return the date of the last conversion in the SQL file, or None."""
+    sql_file = POSTGRES_DIR / "conversions.sql"
+    if not sql_file.exists():
+        return None
+    last_ts = None
+    with open(sql_file) as f:
+        for line in f:
+            if line.startswith("INSERT INTO app_conversions VALUES ("):
+                try:
+                    last_ts = line.split("'")[1][:10]   # first quoted value is conv_ts
+                except IndexError:
+                    pass
+    return date.fromisoformat(last_ts) if last_ts else None
+
+
+def postgres_last_conversion_id() -> int:
+    """Return the highest conversion_id already written, or 0."""
+    sql_file = POSTGRES_DIR / "conversions.sql"
+    if not sql_file.exists():
+        return 0
+    last_id = 0
+    with open(sql_file) as f:
+        for line in f:
+            if line.startswith("INSERT INTO app_conversions VALUES ("):
+                try:
+                    last_id = int(line.split("(")[1].split(",")[0].strip())
+                except (IndexError, ValueError):
+                    pass
+    return last_id
+
+
+def dataset_first_date() -> date:
+    """
+    Return the earliest date already in the dataset so campaign windows
+    and schema drift cutoffs stay anchored consistently across runs.
+    """
+    files = sorted(GOOGLE_DIR.glob("google_ads_*.csv"))
+    if files:
+        stem = files[0].stem.replace("google_ads_", "")
+        return date(int(stem[:4]), int(stem[4:6]), int(stem[6:8]))
+    return FIRST_DATE
+
+
+# ── General helpers ───────────────────────────────────────────────────────────
 
 def daterange(start: date, end: date):
     cur = start
@@ -121,37 +206,27 @@ def daterange(start: date, end: date):
         cur += timedelta(days=1)
 
 
-def campaign_active_on(cid: int, d: date) -> bool:
-    start, end = CAMPAIGN_WINDOWS.get(cid, (START_DATE, END_DATE))
+def campaign_active_on(cid: int, d: date, windows: dict) -> bool:
+    start, end = windows.get(cid, (FIRST_DATE, TODAY))
     return start <= d <= end
 
 
 def jitter(base: float, pct: float = 0.25) -> float:
-    """Return base ± pct random noise."""
     return round(base * random.uniform(1 - pct, 1 + pct), 2)
 
 
 def surge_multiplier(d: date) -> float:
-    """Higher spend around Black Friday / holiday season."""
     days_to_year_end = (date(d.year, 12, 31) - d).days
-    if 20 <= days_to_year_end <= 60:   # Nov–Dec
+    if 20 <= days_to_year_end <= 60:
         return random.uniform(1.4, 2.2)
-    if d.month in (7, 8):              # summer
+    if d.month in (7, 8):
         return random.uniform(1.1, 1.4)
     return 1.0
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1. GOOGLE ADS  →  CSV
-# ─────────────────────────────────────────────────────────────────────────────
-# Messiness injected:
-#   • date column uses 3 different string formats (randomly chosen per row)
-#   • campaign names sometimes have trailing/leading whitespace
-#   • channel values are inconsistent (e.g. "Paid Search", "paid_search", "SEARCH")
-#   • ~3 % of rows are duplicates (soft deletes included)
-#   • soft_deleted flag exists but is easy to miss
+# ── Google Ads helpers ────────────────────────────────────────────────────────
 
-GOOGLE_DATE_FMTS = ["%Y-%m-%d", "%m/%d/%Y", "%d-%b-%Y"]   # intentional inconsistency
+GOOGLE_DATE_FMTS = ["%Y-%m-%d", "%m/%d/%Y", "%d-%b-%Y"]
 
 GOOGLE_CHANNEL_VARIANTS = {
     "search":   ["search", "Paid Search", "paid_search", "SEARCH", "Search"],
@@ -160,97 +235,30 @@ GOOGLE_CHANNEL_VARIANTS = {
     "shopping": ["shopping", "Shopping", "SHOPPING", "product_shopping"],
 }
 
-
 def messy_date(d: date) -> str:
-    fmt = random.choice(GOOGLE_DATE_FMTS)
-    return d.strftime(fmt)
-
+    return d.strftime(random.choice(GOOGLE_DATE_FMTS))
 
 def messy_campaign_name(name: str) -> str:
     if random.random() < 0.12:
-        name = name + "  "          # trailing whitespace
+        name = name + "  "
     if random.random() < 0.05:
-        name = "  " + name          # leading whitespace
+        name = "  " + name
     return name
-
 
 def messy_channel(channel: str) -> str:
     return random.choice(GOOGLE_CHANNEL_VARIANTS[channel])
 
 
-print("Generating Google Ads CSVs …")
+# ── Segment helpers ───────────────────────────────────────────────────────────
 
-google_campaigns = [c for c in CAMPAIGNS if c[2] == "google"]
+NULL_VARIANTS = ["", "N/A", "null", None]
 
-for d in daterange(START_DATE, END_DATE):
-    rows = []
-    for cid, name, platform, channel, budget in google_campaigns:
-        if not campaign_active_on(cid, d):
-            continue
-
-        mult  = surge_multiplier(d)
-        spend = jitter(budget * mult * random.uniform(0.5, 1.0))
-        impr  = int(spend * random.uniform(80, 200))
-        clicks= int(impr * random.uniform(0.01, 0.08))
-
-        row = {
-            "date":           messy_date(d),
-            "campaign_id":    str(cid),
-            "campaign_name":  messy_campaign_name(name),
-            "channel":        messy_channel(channel),
-            "spend_usd":      spend,
-            "impressions":    impr,
-            "clicks":         clicks,
-            "soft_deleted":   "false",
-        }
-        rows.append(row)
-
-        # ~3 % duplicate rows (soft deleted)
-        if random.random() < 0.03:
-            dup = dict(row)
-            dup["soft_deleted"] = "true"
-            rows.append(dup)
-
-    if not rows:
-        continue
-
-    fname = GOOGLE_DIR / f"google_ads_{d.strftime('%Y%m%d')}.csv"
-    with open(fname, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-print(f"  → {len(list(GOOGLE_DIR.iterdir()))} CSV files written to {GOOGLE_DIR}/")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2. SEGMENT CLICKSTREAM  →  JSONL
-# ─────────────────────────────────────────────────────────────────────────────
-# Messiness injected:
-#   • nested `properties` JSON payload (varies by event type)
-#   • timestamps as UTC strings, but format changes mid-year (schema drift)
-#   • events before March 2023 equivalent (first 90 days) missing `session_id`
-#   • some rows use "", "N/A", or "null" string for missing values
-#   • ~1 % of events have a completely missing `user_id` (anonymous)
-#   • `context` block structure changes after day 180
-
-SCHEMA_DRIFT_DAY = START_DATE + timedelta(days=180)
-MISSING_SESSION_CUTOFF = START_DATE + timedelta(days=90)
-
-NULL_VARIANTS = ["", "N/A", "null", None]   # inconsistent nulls
-
-
-def segment_timestamp(d: date) -> str:
-    """Format changes after SCHEMA_DRIFT_DAY."""
+def segment_timestamp(d: date, schema_drift_day: date) -> str:
     dt = datetime(d.year, d.month, d.day,
-                  random.randint(0, 23),
-                  random.randint(0, 59),
-                  random.randint(0, 59))
-    if d >= SCHEMA_DRIFT_DAY:
-        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")          # ISO 8601
-    else:
-        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")        # old format
-
+                  random.randint(0, 23), random.randint(0, 59), random.randint(0, 59))
+    if d >= schema_drift_day:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 def build_properties(event_type: str, cid: int, channel: str) -> dict:
     base = {
@@ -259,175 +267,234 @@ def build_properties(event_type: str, cid: int, channel: str) -> dict:
         "page_url":    f"https://example.com/{random.choice(['home','products','about','pricing'])}",
     }
     if event_type == "add_to_cart":
-        base["product_id"]  = f"prod_{random.randint(1000,9999)}"
-        base["product_name"]= random.choice(["Widget Pro","Gadget X","Thing Plus","Doohickey"])
-        base["price_usd"]   = round(random.uniform(9.99, 299.99), 2)
-        base["quantity"]    = random.randint(1, 5)
+        base["product_id"]   = f"prod_{random.randint(1000,9999)}"
+        base["product_name"] = random.choice(["Widget Pro","Gadget X","Thing Plus","Doohickey"])
+        base["price_usd"]    = round(random.uniform(9.99, 299.99), 2)
+        base["quantity"]     = random.randint(1, 5)
     elif event_type == "checkout_start":
-        base["cart_total"]  = round(random.uniform(20, 800), 2)
-        base["item_count"]  = random.randint(1, 8)
+        base["cart_total"]   = round(random.uniform(20, 800), 2)
+        base["item_count"]   = random.randint(1, 8)
     elif event_type == "search":
-        base["query"]       = random.choice(["widget","best price","review","compare","discount"])
+        base["query"]        = random.choice(["widget","best price","review","compare","discount"])
         base["results_count"]= random.randint(0, 50)
     elif event_type == "product_view":
-        base["product_id"]  = f"prod_{random.randint(1000,9999)}"
-        base["time_on_page"]= random.randint(5, 300)
+        base["product_id"]   = f"prod_{random.randint(1000,9999)}"
+        base["time_on_page"] = random.randint(5, 300)
     return base
 
-
-def build_context(d: date) -> dict:
-    """Context block structure changes after SCHEMA_DRIFT_DAY."""
-    if d >= SCHEMA_DRIFT_DAY:
+def build_context(d: date, schema_drift_day: date) -> dict:
+    if d >= schema_drift_day:
         return {
-            "library": {"name": "analytics.js", "version": "2.11.1"},
+            "library":   {"name": "analytics.js", "version": "2.11.1"},
             "userAgent": "Mozilla/5.0 (compatible)",
-            "ip":         f"192.168.{random.randint(0,255)}.{random.randint(1,254)}",
-            "locale":     random.choice(["en-US","en-GB","fr-FR","de-DE"]),
+            "ip":        f"192.168.{random.randint(0,255)}.{random.randint(1,254)}",
+            "locale":    random.choice(["en-US","en-GB","fr-FR","de-DE"]),
         }
-    else:
-        # older, flatter context
-        return {
-            "library_name":    "analytics.js",
-            "library_version": "2.9.0",
-            "user_agent":      "Mozilla/5.0",
-        }
+    return {
+        "library_name":    "analytics.js",
+        "library_version": "2.9.0",
+        "user_agent":      "Mozilla/5.0",
+    }
 
 
-print("Generating Segment JSONL …")
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────────────────────────────────────
 
-all_google_meta_campaigns = [c for c in CAMPAIGNS]  # all platforms drive clicks
-events_written = 0
+# Detect existing state
+first_date    = dataset_first_date()
+g_last        = google_last_date()
+s_last        = segment_last_date()
+p_last        = postgres_last_date()
+next_conv_id  = postgres_last_conversion_id() + 1
+is_fresh      = g_last is None
 
-with open(SEGMENT_DIR / "segment_tracks.jsonl", "w") as f:
-    for d in daterange(START_DATE, END_DATE):
-        # number of events that day scales with active campaigns
-        active = [c for c in all_google_meta_campaigns if campaign_active_on(c[0], d)]
-        n_events = int(len(active) * random.uniform(30, 120) * surge_multiplier(d))
+# Each source starts from the day after its last generated date
+google_start   = (g_last + timedelta(days=1)) if g_last else FIRST_DATE
+segment_start  = (s_last + timedelta(days=1)) if s_last else FIRST_DATE
+postgres_start = (p_last + timedelta(days=1)) if p_last else FIRST_DATE
 
-        for _ in range(n_events):
-            cid, name, platform, channel, _ = random.choice(active) if active else CAMPAIGNS[0]
-            uid = random.choice(USER_IDS)
-            event_type = random.choice(EVENT_TYPES)
+if is_fresh:
+    print(f"Fresh run — generating full year: {FIRST_DATE} → {TODAY}")
+else:
+    print(f"Incremental run — appending new days up to {TODAY}")
+    print(f"  Google Ads last date  : {g_last}")
+    print(f"  Segment last date     : {s_last}")
+    print(f"  Postgres last date    : {p_last}")
+    print(f"  Next conversion_id    : {next_conv_id}")
 
-            event = {
-                "message_id":  hashlib.md5(f"{d}{uid}{events_written}".encode()).hexdigest(),
-                "type":        "track",
-                "event":       event_type,
-                "timestamp":   segment_timestamp(d),
-                "user_id":     None if random.random() < 0.01 else uid,   # ~1% anonymous
-                "anonymous_id":f"anon_{random.randint(100000,999999)}",
-                "properties":  build_properties(event_type, cid, channel),
-                "context":     build_context(d),
+# Build campaign windows and cutoffs anchored to the dataset's first date
+CAMPAIGN_WINDOWS   = build_campaign_windows(first_date, TODAY)
+SCHEMA_DRIFT_DAY   = first_date + timedelta(days=180)
+MISSING_SESSION_CUTOFF = first_date + timedelta(days=90)
+
+google_campaigns = [c for c in CAMPAIGNS if c[2] == "google"]
+
+# ── 1. Google Ads ─────────────────────────────────────────────────────────────
+
+new_google_days = list(daterange(google_start, TODAY))
+
+if not new_google_days:
+    print("\nGoogle Ads : already up to date.")
+else:
+    print(f"\nGenerating Google Ads CSVs for {len(new_google_days)} new day(s) …")
+    for d in new_google_days:
+        rows = []
+        for cid, name, platform, channel, budget in google_campaigns:
+            if not campaign_active_on(cid, d, CAMPAIGN_WINDOWS):
+                continue
+            mult   = surge_multiplier(d)
+            spend  = jitter(budget * mult * random.uniform(0.5, 1.0))
+            impr   = int(spend * random.uniform(80, 200))
+            clicks = int(impr  * random.uniform(0.01, 0.08))
+            row = {
+                "date":          messy_date(d),
+                "campaign_id":   str(cid),
+                "campaign_name": messy_campaign_name(name),
+                "channel":       messy_channel(channel),
+                "spend_usd":     spend,
+                "impressions":   impr,
+                "clicks":        clicks,
+                "soft_deleted":  "false",
             }
+            rows.append(row)
+            if random.random() < 0.03:
+                dup = dict(row)
+                dup["soft_deleted"] = "true"
+                rows.append(dup)
 
-            # inject missing session_id for early dates
-            if d >= MISSING_SESSION_CUTOFF:
-                event["session_id"] = f"sess_{random.randint(10000000,99999999)}"
-            # else: field simply absent
+        if rows:
+            fname = GOOGLE_DIR / f"google_ads_{d.strftime('%Y%m%d')}.csv"
+            with open(fname, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
 
-            # random null variants for optional fields
-            if random.random() < 0.04:
-                event["user_id"] = random.choice(NULL_VARIANTS)
+    total_google = len(list(GOOGLE_DIR.iterdir()))
+    print(f"  → {len(new_google_days)} new CSV file(s)  ({total_google} total)")
 
-            f.write(json.dumps(event) + "\n")
-            events_written += 1
+# ── 2. Segment ────────────────────────────────────────────────────────────────
 
-print(f"  → {events_written:,} events written to {SEGMENT_DIR}/segment_tracks.jsonl")
+new_segment_days = list(daterange(segment_start, TODAY))
 
+if not new_segment_days:
+    print("\nSegment    : already up to date.")
+else:
+    print(f"\nGenerating Segment events for {len(new_segment_days)} new day(s) …")
+    seg_file = SEGMENT_DIR / "segment_tracks.jsonl"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. POSTGRES BACKEND  →  SQL (INSERT statements)
-# ─────────────────────────────────────────────────────────────────────────────
-# Messiness injected:
-#   • column names follow backend snake_case, not data-team conventions
-#   • `user_id` is INTEGER in source (must be cast to string in warehouse)
-#   • timestamps are stored as strings with "+00:00" offset, not proper TIMESTAMPTZ
-#   • `conversion_type` uses numeric codes (not human-readable labels)
-#   • some rows have NULL revenue (free-tier signups)
-#   • `created_at` vs `converted_at` naming inconsistency in older rows
+    # Count existing events so message_id hashes are unique across runs
+    existing_count = 0
+    if seg_file.exists():
+        with open(seg_file) as f:
+            for _ in f:
+                existing_count += 1
 
-CONVERSION_TYPES = {1: "purchase", 2: "signup", 3: "trial_start", 4: "demo_request"}
+    new_events = 0
+    with open(seg_file, "a") as f:    # append mode
+        for d in new_segment_days:
+            active   = [c for c in CAMPAIGNS if campaign_active_on(c[0], d, CAMPAIGN_WINDOWS)]
+            n_events = int(len(active) * random.uniform(30, 120) * surge_multiplier(d))
 
-print("Generating Postgres SQL …")
+            for _ in range(n_events):
+                cid, name, platform, channel, _ = random.choice(active) if active else CAMPAIGNS[0]
+                uid        = random.choice(USER_IDS)
+                event_type = random.choice(EVENT_TYPES)
+                global_idx = existing_count + new_events
 
-conversions_written = 0
-active_all = [c for c in CAMPAIGNS]
+                event = {
+                    "message_id":  hashlib.md5(f"{d}{uid}{global_idx}".encode()).hexdigest(),
+                    "type":        "track",
+                    "event":       event_type,
+                    "timestamp":   segment_timestamp(d, SCHEMA_DRIFT_DAY),
+                    "user_id":     uid,
+                    "anonymous_id":f"anon_{random.randint(100000,999999)}",
+                    "properties":  build_properties(event_type, cid, channel),
+                    "context":     build_context(d, SCHEMA_DRIFT_DAY),
+                }
 
-with open(POSTGRES_DIR / "conversions.sql", "w") as f:
-    f.write("-- Conversions export from app Postgres backend\n")
-    f.write("-- Exported: {}\n\n".format(datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")))
-    f.write(
-        "CREATE TABLE IF NOT EXISTS app_conversions (\n"
-        "    conversion_id   INTEGER PRIMARY KEY,\n"
-        "    usr_id          INTEGER,\n"          # ← intentional backend naming
-        "    cmpgn_id        INTEGER,\n"          # ← abbreviated, non-standard
-        "    conv_type_cd    INTEGER,\n"          # ← numeric code, not label
-        "    revenue_amt     NUMERIC(10,2),\n"    # ← NULL for free signups
-        "    conv_ts         VARCHAR(32),\n"      # ← stored as string with TZ offset
-        "    created_at      VARCHAR(32)\n"       # ← duplicate/overlapping timestamp
-        ");\n\n"
-    )
+                if d >= MISSING_SESSION_CUTOFF:
+                    event["session_id"] = f"sess_{random.randint(10000000,99999999)}"
 
-    conversion_id = 1
+                if random.random() < 0.04:
+                    event["user_id"] = random.choice(NULL_VARIANTS)
 
-    for d in daterange(START_DATE, END_DATE):
-        active = [c for c in active_all if campaign_active_on(c[0], d)]
-        if not active:
-            continue
+                f.write(json.dumps(event) + "\n")
+                new_events += 1
 
-        # Conversions are rarer than clicks — roughly 0.5–3 % of clicks
-        n_conversions = int(len(active) * random.uniform(0.5, 4) * surge_multiplier(d))
+    total_events = existing_count + new_events
+    print(f"  → {new_events:,} new events appended  ({total_events:,} total)")
 
-        for _ in range(n_conversions):
-            cid, name, platform, channel, budget = random.choice(active)
-            uid_int  = random.randint(1, 5000)
-            conv_type= random.choices([1, 2, 3, 4], weights=[40, 30, 20, 10])[0]
+# ── 3. Postgres ───────────────────────────────────────────────────────────────
 
-            # Revenue: NULL for signups/trials, positive for purchases, variable for demos
-            if conv_type == 1:        # purchase
-                revenue = round(random.uniform(9.99, 499.99), 2)
-            elif conv_type == 4:      # demo → pipeline value
-                revenue = round(random.uniform(500, 5000), 2)
-            else:                     # signup / trial → NULL
-                revenue = None
+new_postgres_days = list(daterange(postgres_start, TODAY))
 
-            # Timestamp as string with offset (messy)
-            dt = datetime(d.year, d.month, d.day,
-                          random.randint(0, 23), random.randint(0, 59), random.randint(0, 59))
-            conv_ts   = dt.strftime("%Y-%m-%d %H:%M:%S+00:00")
-            created_at= dt.strftime("%Y-%m-%dT%H:%M:%SZ")   # different format same value
+if not new_postgres_days:
+    print("\nPostgres   : already up to date.")
+else:
+    print(f"\nGenerating Postgres conversions for {len(new_postgres_days)} new day(s) …")
+    sql_file      = POSTGRES_DIR / "conversions.sql"
+    conversion_id = next_conv_id
+    new_rows      = 0
+    write_header  = not sql_file.exists()
 
-            revenue_sql = "NULL" if revenue is None else str(revenue)
-
+    with open(sql_file, "a") as f:
+        if write_header:
+            f.write("-- Conversions export from app Postgres backend\n")
+            f.write(f"-- First generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n\n")
             f.write(
-                f"INSERT INTO app_conversions VALUES "
-                f"({conversion_id}, {uid_int}, {cid}, {conv_type}, "
-                f"{revenue_sql}, '{conv_ts}', '{created_at}');\n"
+                "CREATE TABLE IF NOT EXISTS app_conversions (\n"
+                "    conversion_id   INTEGER PRIMARY KEY,\n"
+                "    usr_id          INTEGER,\n"
+                "    cmpgn_id        INTEGER,\n"
+                "    conv_type_cd    INTEGER,\n"
+                "    revenue_amt     NUMERIC(10,2),\n"
+                "    conv_ts         VARCHAR(32),\n"
+                "    created_at      VARCHAR(32)\n"
+                ");\n\n"
             )
+        else:
+            f.write(f"\n-- Appended: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n")
 
-            conversion_id  += 1
-            conversions_written += 1
+        for d in new_postgres_days:
+            active = [c for c in CAMPAIGNS if campaign_active_on(c[0], d, CAMPAIGN_WINDOWS)]
+            if not active:
+                continue
 
-print(f"  → {conversions_written:,} rows written to {POSTGRES_DIR}/conversions.sql")
+            n_conversions = int(len(active) * random.uniform(0.5, 4) * surge_multiplier(d))
 
+            for _ in range(n_conversions):
+                cid, _, __, ___, ____ = random.choice(active)
+                uid_int   = random.choice(USER_ID_INTS)
+                conv_type = random.choices([1, 2, 3, 4], weights=[40, 30, 20, 10])[0]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SUMMARY
-# ─────────────────────────────────────────────────────────────────────────────
+                if conv_type == 1:
+                    revenue = round(random.uniform(9.99, 499.99), 2)
+                elif conv_type == 4:
+                    revenue = round(random.uniform(500, 5000), 2)
+                else:
+                    revenue = None
 
-google_files = len(list(GOOGLE_DIR.iterdir()))
+                dt = datetime(d.year, d.month, d.day,
+                              random.randint(0, 23), random.randint(0, 59), random.randint(0, 59))
+                conv_ts    = dt.strftime("%Y-%m-%d %H:%M:%S+00:00")
+                created_at = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                rev_sql    = "NULL" if revenue is None else str(revenue)
+
+                f.write(
+                    f"INSERT INTO app_conversions VALUES "
+                    f"({conversion_id}, {uid_int}, {cid}, {conv_type}, "
+                    f"{rev_sql}, '{conv_ts}', '{created_at}');\n"
+                )
+                conversion_id += 1
+                new_rows      += 1
+
+    print(f"  → {new_rows:,} new rows appended  ({conversion_id - 1:,} total)")
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+
 print("\n─────────────────────────────────────────────────")
-print("  Data generation complete!")
-print(f"  Date range : {START_DATE} → {END_DATE}")
-print(f"  Campaigns  : {len(CAMPAIGNS)}")
-print(f"  Google Ads : {google_files} CSV files          → {GOOGLE_DIR}/")
-print(f"  Segment    : {events_written:,} events (JSONL) → {SEGMENT_DIR}/segment_tracks.jsonl")
-print(f"  Postgres   : {conversions_written:,} conversions (SQL) → {POSTGRES_DIR}/conversions.sql")
+print(f"  {'Fresh generation' if is_fresh else 'Incremental update'} complete!")
+print(f"  Dataset range : {first_date} → {TODAY}")
+print(f"  Google Ads    : {len(list(GOOGLE_DIR.iterdir()))} CSV files total")
 print("─────────────────────────────────────────────────")
-print("\nMessiness summary (what your Bronze layer will need to handle):")
-print("  Google Ads : 3 date formats, channel naming variants, trailing whitespace,")
-print("               soft-deleted duplicate rows (~3%)")
-print("  Segment    : nested JSON properties, 2 timestamp formats (schema drift at day 180),")
-print("               missing session_id before day 90, inconsistent nulls ('', 'N/A', 'null')")
-print("  Postgres   : abbreviated column names (usr_id, cmpgn_id, conv_type_cd),")
-print("               numeric type codes, revenue NULLs, timestamps as strings with TZ offset")
