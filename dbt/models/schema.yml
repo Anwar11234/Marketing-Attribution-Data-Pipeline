@@ -1,0 +1,63 @@
+version: 2
+
+models:
+  - name: stg_google_ads__campaign_spend
+    description: "Daily spend by campaign from google ads exports"
+    columns:
+      - name: stg_google_ads__campaign_spend_id
+        description: surrogate key for this staging model
+        data_type: string
+        tests:
+          - unique
+          - not_null
+      
+      - name: spend_date
+        description: the date the spend occured
+        data_type: date
+        tests:
+          - not_null
+      
+      - name: campaign_id 
+        description: unique identifier for the campaign
+        data_type: integer
+        tests:
+          - not_null
+      
+      - name: campaign_name
+        description: Display name of the campaign
+        data_type: string 
+      
+      - name: channel
+        description: marketing channel name 
+        data_type: string 
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['search', 'display', 'video', 'shopping']
+      
+      - name: spend_amount
+        description: total campaing spend in USD
+        data_type: decimal(10,2)
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      
+      - name: impressions
+        description: Number of times ads were shown.
+        data_type: integer
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+
+      - name: clicks
+        description: Number of clicks on ads.
+        data_type: integer
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
