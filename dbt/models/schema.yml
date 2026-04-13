@@ -122,3 +122,147 @@ models:
         data_type: timestamp
         tests:
           - not_null
+
+  - name: stg_segment__tracks
+    description: "Staging model for Segment tracks data, cleaning and extracting key fields from raw JSON event data"
+    columns:
+      - name: stg_segment__message_id
+        description: surrogate key for this staging model
+        data_type: string
+        tests:
+          - unique
+          - not_null
+
+      - name: message_id
+        description: Unique identifier for the Segment message/event
+        data_type: string
+        tests:
+          - unique
+          - not_null
+      
+      - name: type
+        description: Type of the Segment event
+        data_type: string
+        tests:
+          - accepted_values:
+              arguments:
+                values:  ["track"]
+      
+      - name: event
+        description: Name of the tracked event
+        data_type: string
+        tests:
+          - accepted_values:
+              arguments:
+                values:  ["add_to_cart","search","checkout_start","product_view", "page_view"]
+        
+      
+      - name: timestamp
+        description: Timestamp when the event occurred, parsed from various formats
+        data_type: timestamp
+        tests:
+          - not_null
+      
+      - name: user_id
+        description: Unique identifier for the user (null if anonymous or invalid)
+        data_type: string
+      
+      - name: anonymous_id
+        description: Anonymous identifier for the user session
+        data_type: string
+      
+      - name: campaign_id
+        description: Campaign identifier extracted from event properties
+        data_type: integer
+        tests:
+          - not_null
+      
+      - name: channel
+        description: Marketing channel associated with the event
+        data_type: string
+        tests:
+          - not_null
+      
+      - name: page_url
+        description: URL of the page where the event occurred
+        data_type: string
+      
+      - name: product_id
+        description: Identifier for the product involved in the event
+        data_type: string
+      
+      - name: time_on_page
+        description: Time spent on the page in seconds
+        data_type: float
+      
+      - name: product_name
+        description: Name of the product
+        data_type: string
+      
+      - name: price_usd
+        description: Price of the product in USD
+        data_type: decimal(10,2)
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      
+      - name: quantity
+        description: Quantity of the product
+        data_type: integer
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      
+      - name: cart_total
+        description: Total value of items in the cart
+        data_type: decimal(10,2)
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      
+      - name: item_count
+        description: Number of items in the cart
+        data_type: integer
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      
+      - name: query
+        description: Search query string
+        data_type: string
+      
+      - name: results_count
+        description: Number of search results returned
+        data_type: integer
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      
+      - name: library_name
+        description: Name of the Segment library used
+        data_type: string
+      
+      - name: library_version
+        description: Version of the Segment library
+        data_type: string
+      
+      - name: user_agent
+        description: User agent string from the browser/device
+        data_type: string
+      
+      - name: ip
+        description: IP address of the user
+        data_type: string
+      
+      - name: locale
+        description: User's locale/language setting
+        data_type: string
+      
+      - name: session_id
+        description: Identifier for the user session
+        data_type: string
