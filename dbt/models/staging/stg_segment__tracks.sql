@@ -22,7 +22,7 @@ SELECT
   properties ->> 'channel' AS channel,
   properties ->> 'page_url' AS page_url,
   properties ->> 'product_id' AS product_id,
-  properties ->> 'time_on_page' AS time_on_page,
+  (properties ->> 'time_on_page')::INT AS time_on_page,
   properties ->> 'product_name' AS product_name,
   (properties ->> 'price_usd')::FLOAT AS price_usd,
   (properties ->> 'quantity')::INT AS quantity,
