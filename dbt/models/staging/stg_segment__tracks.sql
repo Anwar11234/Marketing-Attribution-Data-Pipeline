@@ -6,7 +6,7 @@
 }}
 
 SELECT 
- {{ dbt_utils.generate_surrogate_key(['message_id']) }} AS stg_segment__message_id,
+ {{ dbt_utils.generate_surrogate_key(['message_id']) }} AS stg_segment__tracks_id,
 
   message_id, 
   type, 
