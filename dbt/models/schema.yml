@@ -126,7 +126,7 @@ models:
   - name: stg_segment__tracks
     description: "Staging model for Segment tracks data, cleaning and extracting key fields from raw JSON event data"
     columns:
-      - name: stg_segment__message_id
+      - name: stg_segment__tracks_id
         description: surrogate key for this staging model
         data_type: string
         tests:
